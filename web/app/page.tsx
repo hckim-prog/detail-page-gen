@@ -1,673 +1,667 @@
-"use client";
+'use client';
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 
-type Feature = {
-  title: string;
-  desc: string;
-  imageFile: File | null;
-  imagePreviewUrl: string | null;
+type ImgState = {
+  url: string | null;
+  name: string;
+  w: number;
+  h: number;
 };
 
-const FEATURE_COUNT = 5;
+async function measureImage(url: string): Promise<{ w: number; h: number }> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+    img.onerror = reject;
+    img.src = url;
+  });
+}
 
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
+function clamp(n: number, a: number, b: number) {
+  return Math.max(a, Math.min(b, n));
 }
 
 export default function Page() {
-  // =========================
-  // 0) 상세페이지 사이즈(px)
-  // =========================
-  const [pageWidth, setPageWidth] = useState<number>(800);
-  const [pageHeight, setPageHeight] = useState<number>(1500);
+  // 출력 상세페이지 사이즈(나중에 PNG 생성용)
+  const [outW, setOutW] = useState<number>(800);
+  const [outH, setOutH] = useState<number>(1500);
 
-  // =========================
-  // 1) Hook + 앞표지/책등 분리 업로드
-  // =========================
-  const [hookText, setHookText] = useState("");
+  // Hook
+  const [hook, setHook] = useState<string>('');
 
-  // 앞표지(넓은 이미지)
-  const [frontFile, setFrontFile] = useState<File | null>(null);
-  const [frontUrl, setFrontUrl] = useState<string | null>(null);
-  const [frontNat, setFrontNat] = useState<{ w: number; h: number } | null>(null);
+  // 이미지(앞표지/책등)
+  const [cover, setCover] = useState<ImgState>({ url: null, name: '', w: 0, h: 0 });
+  const [spine, setSpine] = useState<ImgState>({ url: null, name: '', w: 0, h: 0 });
 
-  // 책등(얇고 긴 이미지)
-  const [spineFile, setSpineFile] = useState<File | null>(null);
-  const [spineUrl, setSpineUrl] = useState<string | null>(null);
-  const [spineNat, setSpineNat] = useState<{ w: number; h: number } | null>(null);
+  // 이전 objectURL 정리용
+  const coverUrlRef = useRef<string | null>(null);
+  const spineUrlRef = useRef<string | null>(null);
 
-  // 책 두께(=책등 깊이) 표시 배율
-  const [thicknessScale, setThicknessScale] = useState<number>(1.0);
-
-  // =========================
-  // (미리보기 각도) 샘플 각도 맞추는 핵심 3개
-  // =========================
-  const CAMERA_PERSPECTIVE = 1400; // 원근감(큰 값=왜곡 적음)
-  const CAMERA_ROTATE_Y = 22;      // 좌측 책등이 보이는 각도(샘플 느낌)
-  const CAMERA_ROTATE_X = 1.8;     // 살짝 위/아래 기울기
-  const CAMERA_ROTATE_Z = -0.8;    // 아주 미세한 기울기
-
-  // =========================
-  // 2) 특징 5개
-  // =========================
-  const [features, setFeatures] = useState<Feature[]>(
-    Array.from({ length: FEATURE_COUNT }, () => ({
-      title: "",
-      desc: "",
-      imageFile: null,
-      imagePreviewUrl: null,
-    }))
-  );
-
-  const updateFeature = (idx: number, patch: Partial<Feature>) => {
-    setFeatures((prev) => {
-      const next = [...prev];
-      const old = next[idx];
-
-      if (patch.imageFile && old.imagePreviewUrl) {
-        URL.revokeObjectURL(old.imagePreviewUrl);
-      }
-
-      const merged: Feature = { ...old, ...patch };
-
-      if (patch.imageFile) {
-        merged.imagePreviewUrl = URL.createObjectURL(patch.imageFile);
-      }
-
-      next[idx] = merged;
-      return next;
-    });
-  };
-
-  // =========================
-  // 앞표지 URL/원본크기 읽기
-  // =========================
-  useEffect(() => {
-    if (!frontFile) {
-      setFrontUrl(null);
-      setFrontNat(null);
-      return;
-    }
-    const url = URL.createObjectURL(frontFile);
-    setFrontUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [frontFile]);
+  // 3D 조절값
+  const [depthPx, setDepthPx] = useState<number>(32); // 책 두께
+  const [camY, setCamY] = useState<number>(24);       // 좌우 각도(샘플 느낌)
+  const [camX, setCamX] = useState<number>(6);        // 위아래 각도(샘플 느낌)
+  const [tiltZ, setTiltZ] = useState<number>(-2);     // 살짝 기울임(샘플 느낌)
 
   useEffect(() => {
-    if (!frontUrl) {
-      setFrontNat(null);
-      return;
-    }
-    const img = new Image();
-    img.onload = () => setFrontNat({ w: img.naturalWidth, h: img.naturalHeight });
-    img.src = frontUrl;
-  }, [frontUrl]);
-
-  // =========================
-  // 책등 URL/원본크기 읽기
-  // =========================
-  useEffect(() => {
-    if (!spineFile) {
-      setSpineUrl(null);
-      setSpineNat(null);
-      return;
-    }
-    const url = URL.createObjectURL(spineFile);
-    setSpineUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [spineFile]);
-
-  useEffect(() => {
-    if (!spineUrl) {
-      setSpineNat(null);
-      return;
-    }
-    const img = new Image();
-    img.onload = () => setSpineNat({ w: img.naturalWidth, h: img.naturalHeight });
-    img.src = spineUrl;
-  }, [spineUrl]);
-
-  // =========================
-  // ✅ 3D 책 박스 크기 계산 (박스 방식)
-  //   W = 앞표지 가로
-  //   H = 책 높이
-  //   D = 책 두께(=책등 면 가로, depth)
-  // =========================
-  const PREVIEW_H = 560;
-  const MAX_W = 420;
-
-  const bookDims = useMemo(() => {
-    let H = PREVIEW_H;
-    let W = 320; // front width
-    let D = 28;  // depth (=spine thickness)
-
-    // 앞표지 스케일(높이 기준 + 폭 제한)
-    if (frontNat) {
-      const scaleByH = PREVIEW_H / frontNat.h;
-      const scaleByW = MAX_W / frontNat.w;
-      const scale = Math.min(scaleByH, scaleByW);
-      W = Math.round(frontNat.w * scale);
-      H = Math.round(frontNat.h * scale);
-    }
-
-    // 책등 두께(D): 책등 이미지의 가로폭을 높이에 맞춰 환산
-    if (spineNat) {
-      const scale = H / spineNat.h;
-      const rawD = spineNat.w * scale * thicknessScale;
-      D = Math.round(rawD);
-      D = clamp(D, 16, 80);
-    }
-
-    return { W, H, D };
-  }, [frontNat, spineNat, thicknessScale]);
-
-  const isReady = useMemo(() => {
-    return (
-      pageWidth >= 300 &&
-      pageHeight >= 400 &&
-      hookText.trim().length > 0 &&
-      Boolean(frontFile) &&
-      Boolean(spineFile)
-    );
-  }, [pageWidth, pageHeight, hookText, frontFile, spineFile]);
-
-  const handleGenerate = () => {
-    const payload = {
-      pageSizePx: { width: pageWidth, height: pageHeight },
-      hookText,
-      frontFileName: frontFile?.name ?? null,
-      spineFileName: spineFile?.name ?? null,
-      frontNaturalSize: frontNat,
-      spineNaturalSize: spineNat,
-      thicknessScale,
-      camera: {
-        perspective: CAMERA_PERSPECTIVE,
-        rotateY: CAMERA_ROTATE_Y,
-        rotateX: CAMERA_ROTATE_X,
-        rotateZ: CAMERA_ROTATE_Z,
-      },
-      features: features.map((f, i) => ({
-        idx: i + 1,
-        title: f.title,
-        desc: f.desc,
-        imageFileName: f.imageFile?.name ?? null,
-      })),
+    return () => {
+      if (coverUrlRef.current) URL.revokeObjectURL(coverUrlRef.current);
+      if (spineUrlRef.current) URL.revokeObjectURL(spineUrlRef.current);
     };
+  }, []);
 
-    alert("입력이 잘 들어왔어요!\n\n" + JSON.stringify(payload, null, 2));
+  const onPickCover = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // 같은 파일을 다시 선택해도 반응하도록 초기화
+    if (!file) return;
+
+    if (coverUrlRef.current) URL.revokeObjectURL(coverUrlRef.current);
+    const url = URL.createObjectURL(file);
+    coverUrlRef.current = url;
+
+    const size = await measureImage(url);
+    setCover({ url, name: file.name, w: size.w, h: size.h });
   };
 
-  // =========================
-  // 3D 스타일 변수
-  // =========================
-  const cssVars = {
-    // @ts-ignore
-    "--bookW": `${bookDims.W}px`,
-    "--bookH": `${bookDims.H}px`,
-    "--bookD": `${bookDims.D}px`,
-    // @ts-ignore
-    "--persp": `${CAMERA_PERSPECTIVE}px`,
-    "--rotY": `${CAMERA_ROTATE_Y}deg`,
-    "--rotX": `${CAMERA_ROTATE_X}deg`,
-    "--rotZ": `${CAMERA_ROTATE_Z}deg`,
-  } as React.CSSProperties;
+  const onPickSpine = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    if (spineUrlRef.current) URL.revokeObjectURL(spineUrlRef.current);
+    const url = URL.createObjectURL(file);
+    spineUrlRef.current = url;
+
+    const size = await measureImage(url);
+    setSpine({ url, name: file.name, w: size.w, h: size.h });
+  };
+
+  // 미리보기(화면용)에서 책 앞표지 크기 자동 계산
+  const previewFrontSize = useMemo(() => {
+    // 미리보기 카드 안에서 “안 잘리게” 보이도록 상한값
+    const MAX_W = 340;
+    const MAX_H = 520;
+
+    if (!cover.url || cover.w === 0 || cover.h === 0) {
+      return { fw: 320, fh: 480 };
+    }
+
+    const aspect = cover.w / cover.h; // 가로/세로
+    let fh = MAX_H;
+    let fw = Math.round(fh * aspect);
+
+    if (fw > MAX_W) {
+      fw = MAX_W;
+      fh = Math.round(fw / aspect);
+    }
+
+    return { fw, fh };
+  }, [cover.url, cover.w, cover.h]);
+
+  const canShow3D = !!cover.url && !!spine.url;
 
   return (
-    <main className="min-h-screen bg-neutral-50">
-      <div className="mx-auto max-w-6xl px-4 py-10">
-        <h1 className="text-2xl font-bold tracking-tight">상세페이지 생성기</h1>
-        <p className="mt-2 text-sm text-neutral-600">
-          ✅ “앞표지(넓은 이미지)” + “책등(얇고 긴 이미지)”를 합쳐서,
-          <b>샘플과 비슷한 각도의 3D 책</b>으로 미리보기를 만듭니다.
-        </p>
+    <main className="page">
+      <div className="wrap">
+        <h1 className="title">detail page gen</h1>
 
-        {/* 0) Size */}
-        <section className="mt-8 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-neutral-200">
-          <h2 className="text-lg font-semibold">0) 상세페이지 사이즈(픽셀)</h2>
-          <p className="mt-2 text-sm text-neutral-600">가로/세로를 픽셀로 입력하세요. (기본 800 × 1500)</p>
+        {/* 0) 상세페이지 사이즈 */}
+        <section className="card">
+          <h2 className="cardTitle">0) 상세페이지 사이즈(픽셀)</h2>
+          <p className="muted">가로/세로를 픽셀로 입력해요. (기본 800 × 1500)</p>
 
-          <div className="mt-4 grid gap-4 md:grid-cols-3">
+          <div className="row2">
             <div>
-              <label className="text-sm font-medium">가로(px)</label>
+              <label className="label">가로(px)</label>
               <input
+                className="input"
                 type="number"
-                min={300}
-                max={3000}
-                className="mt-2 w-full rounded-xl border border-neutral-300 px-4 py-3 text-sm outline-none focus:border-neutral-600"
-                value={pageWidth}
-                onChange={(e) => setPageWidth(Number(e.target.value || 0))}
+                min={200}
+                max={4000}
+                value={outW}
+                onChange={(e) => setOutW(Number(e.target.value || 0))}
               />
             </div>
-
             <div>
-              <label className="text-sm font-medium">세로(px)</label>
+              <label className="label">세로(px)</label>
               <input
+                className="input"
                 type="number"
-                min={400}
-                max={5000}
-                className="mt-2 w-full rounded-xl border border-neutral-300 px-4 py-3 text-sm outline-none focus:border-neutral-600"
-                value={pageHeight}
-                onChange={(e) => setPageHeight(Number(e.target.value || 0))}
+                min={200}
+                max={8000}
+                value={outH}
+                onChange={(e) => setOutH(Number(e.target.value || 0))}
               />
             </div>
+          </div>
 
-            <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-700">
-              <div className="font-semibold">현재 설정</div>
-              <div className="mt-1">{pageWidth} × {pageHeight} px</div>
-              <div className="mt-2 text-xs text-neutral-500">(다음 단계에서 서버가 이 크기로 이미지를 생성)</div>
-            </div>
+          <div className="pill">
+            <div className="pillTitle">현재 설정</div>
+            <div className="pillValue">{outW} × {outH} px</div>
+            <div className="pillSub">(다음 단계에서 이 크기로 최종 이미지를 만들게 돼요)</div>
           </div>
         </section>
 
-        {/* 1) Cover + Hook */}
-        <section className="mt-8 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-neutral-200">
-          <h2 className="text-lg font-semibold">1) 표지 입력(앞표지 + 책등) + Hook</h2>
-          <p className="mt-2 text-sm text-neutral-600">
-            ✅ 앞표지(넓은 이미지) / 책등(얇고 긴 이미지)을 각각 넣으면
-            <b>3D 책 박스</b>로 합쳐서 샘플 각도처럼 보여줍니다.
+        {/* 1) 표지/책등 + Hook */}
+        <section className="card">
+          <h2 className="cardTitle">1) 앞표지 + 책등 + Hook</h2>
+          <p className="muted">
+            ✅ 앞표지(넓은 이미지)와 책등(얇고 긴 이미지)을 따로 올리면,
+            오른쪽에서 샘플 각도로 입체표지로 보여줘요.
           </p>
 
-          <div className="mt-4 grid gap-6 md:grid-cols-2">
-            {/* Left controls */}
+          <div className="grid2">
+            {/* 왼쪽: 입력 */}
             <div>
-              <label className="text-sm font-medium">Hook 메시지(표지 위 문구)</label>
+              <label className="label">Hook 메시지(표지 위 문구)</label>
               <input
-                className="mt-2 w-full rounded-xl border border-neutral-300 px-4 py-3 text-sm outline-none focus:border-neutral-600"
+                className="input"
                 placeholder="예: 석·박사 학위논문을 품격 있게 완성하는 가이드"
-                value={hookText}
-                onChange={(e) => setHookText(e.target.value)}
+                value={hook}
+                onChange={(e) => setHook(e.target.value)}
               />
-              <p className="mt-2 text-xs text-neutral-500">권장: 18~35자</p>
+              <div className="hint">권장: 18~35자</div>
 
-              {/* Front upload */}
-              <div className="mt-6">
-                <div className="text-sm font-medium">앞표지 업로드(넓은 이미지)</div>
-                <label className="mt-2 inline-flex w-full cursor-pointer items-center justify-center rounded-2xl bg-black px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-neutral-800">
+              <div className="spacer" />
+
+              <label className="label">앞표지 업로드(넓은 이미지)</label>
+              <div className="fileRow">
+                <input id="coverFile" className="fileInput" type="file" accept="image/*" onChange={onPickCover} />
+                <label htmlFor="coverFile" className="fileBtn dark">
                   앞표지 이미지 선택하기
-                  <input
-                    className="hidden"
-                    type="file"
-                    accept="image/*"
-                    onChange={(e) => setFrontFile(e.target.files?.[0] ?? null)}
-                  />
                 </label>
-                <div className="mt-2 text-xs text-neutral-600">
-                  선택된 파일: <b>{frontFile?.name ?? "없음"}</b>
-                </div>
-                {frontNat && (
-                  <div className="mt-1 text-xs text-neutral-500">
-                    원본 크기: {frontNat.w} × {frontNat.h}px
-                  </div>
+              </div>
+              <div className="fileMeta">
+                {cover.url ? (
+                  <>
+                    <div>선택된 파일: <b>{cover.name}</b></div>
+                    <div>원본 크기: {cover.w} × {cover.h}px</div>
+                  </>
+                ) : (
+                  <div>아직 선택된 앞표지 파일이 없어요</div>
                 )}
               </div>
 
-              {/* Spine upload */}
-              <div className="mt-6">
-                <div className="text-sm font-medium">책등 업로드(얇고 상하로 긴 이미지)</div>
-                <label className="mt-2 inline-flex w-full cursor-pointer items-center justify-center rounded-2xl border border-neutral-300 bg-white px-4 py-3 text-sm font-semibold text-neutral-900 shadow-sm hover:bg-neutral-50">
+              <div className="spacer" />
+
+              <label className="label">책등 업로드(얇고 상하로 긴 이미지)</label>
+              <div className="fileRow">
+                <input id="spineFile" className="fileInput" type="file" accept="image/*" onChange={onPickSpine} />
+                <label htmlFor="spineFile" className="fileBtn">
                   책등 이미지 선택하기
-                  <input
-                    className="hidden"
-                    type="file"
-                    accept="image/*"
-                    onChange={(e) => setSpineFile(e.target.files?.[0] ?? null)}
-                  />
                 </label>
-                <div className="mt-2 text-xs text-neutral-600">
-                  선택된 파일: <b>{spineFile?.name ?? "없음"}</b>
-                </div>
-                {spineNat && (
-                  <div className="mt-1 text-xs text-neutral-500">
-                    원본 크기: {spineNat.w} × {spineNat.h}px
-                  </div>
+              </div>
+              <div className="fileMeta">
+                {spine.url ? (
+                  <>
+                    <div>선택된 파일: <b>{spine.name}</b></div>
+                    <div>원본 크기: {spine.w} × {spine.h}px</div>
+                  </>
+                ) : (
+                  <div>아직 선택된 책등 파일이 없어요</div>
                 )}
               </div>
 
-              {/* thickness */}
-              <div className="mt-6">
-                <label className="text-sm font-medium">책 두께(책등 깊이) 조절</label>
-                <div className="mt-2 flex items-center gap-3">
-                  <input
-                    type="range"
-                    min={0.7}
-                    max={1.8}
-                    step={0.05}
-                    value={thicknessScale}
-                    onChange={(e) => setThicknessScale(Number(e.target.value))}
-                    className="w-full"
-                  />
-                  <div className="w-16 rounded-xl border border-neutral-300 bg-white px-2 py-1 text-center text-sm">
-                    {thicknessScale.toFixed(2)}x
+              <div className="spacer" />
+
+              <label className="label">책 두께(책등 깊이) 조절</label>
+              <div className="sliderRow">
+                <input
+                  className="slider"
+                  type="range"
+                  min={16}
+                  max={64}
+                  value={depthPx}
+                  onChange={(e) => setDepthPx(Number(e.target.value))}
+                />
+                <div className="chip">{depthPx}px</div>
+              </div>
+              <div className="hint">두께가 얇으면 18~28px, 두꺼우면 32~48px 추천</div>
+
+              <div className="spacer" />
+
+              <details className="details">
+                <summary>샘플 각도 미세 조정(필요할 때만)</summary>
+                <div className="subControls">
+                  <div className="ctrl">
+                    <div className="ctrlLabel">좌우 각도(Y)</div>
+                    <input
+                      className="slider"
+                      type="range"
+                      min={18}
+                      max={30}
+                      value={camY}
+                      onChange={(e) => setCamY(Number(e.target.value))}
+                    />
+                    <div className="chip">{camY}°</div>
+                  </div>
+
+                  <div className="ctrl">
+                    <div className="ctrlLabel">위아래 각도(X)</div>
+                    <input
+                      className="slider"
+                      type="range"
+                      min={0}
+                      max={14}
+                      value={camX}
+                      onChange={(e) => setCamX(Number(e.target.value))}
+                    />
+                    <div className="chip">{camX}°</div>
+                  </div>
+
+                  <div className="ctrl">
+                    <div className="ctrlLabel">기울임(Z)</div>
+                    <input
+                      className="slider"
+                      type="range"
+                      min={-8}
+                      max={8}
+                      value={tiltZ}
+                      onChange={(e) => setTiltZ(Number(e.target.value))}
+                    />
+                    <div className="chip">{tiltZ}°</div>
                   </div>
                 </div>
-                <p className="mt-2 text-xs text-neutral-500">
-                  샘플처럼 보이게 하려면 보통 0.9~1.2 사이에서 맞춰집니다.
-                </p>
-              </div>
-
-              <div className="mt-6 rounded-2xl border border-neutral-200 bg-neutral-50 p-4 text-xs text-neutral-600">
-                <div className="font-semibold text-sm text-neutral-800">샘플 각도 미세조정 방법</div>
-                <div className="mt-2">
-                  코드 상단의 <b>CAMERA_ROTATE_Y</b> 값만 18~28 사이로 바꾸면
-                  “샘플 각도”에 더 가까워집니다.
-                </div>
-              </div>
+              </details>
             </div>
 
-            {/* Right preview */}
+            {/* 오른쪽: 미리보기 */}
             <div>
-              <label className="text-sm font-medium">입체표지 미리보기(샘플 각도)</label>
+              <div className="previewTitle">입체표지 미리보기(화면용)</div>
 
-              <div className="mt-2 rounded-2xl border border-neutral-200 bg-[#f5e7a8] p-6">
-                {/* 배경 질감 느낌(가볍게) */}
-                <div className="relative rounded-2xl bg-[radial-gradient(circle_at_20%_10%,rgba(255,255,255,0.35),transparent_35%),radial-gradient(circle_at_70%_20%,rgba(255,255,255,0.25),transparent_40%),linear-gradient(to_bottom,rgba(255,255,255,0.15),rgba(255,255,255,0.0))] p-6">
-                  <div className="flex items-center justify-center">
-                    <div className="scene" style={cssVars}>
-                      {/* 바닥 그림자 */}
-                      <div className="shadow-ellipse" />
-
-                      {/* 3D Book */}
-                      <div className="book">
-                        {/* FRONT (앞표지) */}
-                        <div className="face front">
-                          <div className="faceInner">
-                            {frontUrl ? (
-                              <div className="relative h-full w-full">
-                                {/* eslint-disable-next-line @next/next/no-img-element */}
-                                <img
-                                  src={frontUrl}
-                                  alt="front"
-                                  className="h-full w-full object-contain"
-                                  draggable={false}
-                                />
-                                {/* Hook 오버레이 */}
-                                <div className="absolute left-0 right-0 top-0 bg-black/40 px-4 py-3">
-                                  <div className="text-sm font-semibold text-white break-words">
-                                    {hookText.trim() ? hookText : "Hook 메시지가 여기에 올라갑니다"}
-                                  </div>
-                                </div>
-
-                                {/* 앞표지 하이라이트 */}
-                                <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-white/18 via-transparent to-black/10" />
-                                {/* 책등쪽 가장자리 그림자 */}
-                                <div className="pointer-events-none absolute inset-y-0 left-0 w-8 bg-gradient-to-r from-black/12 to-transparent" />
-                              </div>
-                            ) : (
-                              <div className="flex h-full w-full items-center justify-center text-sm text-neutral-500">
-                                앞표지를 업로드하세요
-                              </div>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* LEFT (책등) */}
-                        <div className="face left">
-                          <div className="faceInner">
-                            {spineUrl ? (
-                              <div className="relative h-full w-full">
-                                {/* eslint-disable-next-line @next/next/no-img-element */}
-                                <img
-                                  src={spineUrl}
-                                  alt="spine"
-                                  className="h-full w-full object-contain"
-                                  draggable={false}
-                                />
-                                {/* 책등 셰이딩 */}
-                                <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-black/18 via-transparent to-white/10" />
-                              </div>
-                            ) : (
-                              <div className="flex h-full w-full items-center justify-center text-xs text-neutral-500">
-                                책등을 업로드하세요
-                              </div>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* RIGHT (책 옆면/페이지) - 샘플에서는 거의 안 보이지만 입체감용 */}
-                        <div className="face right">
-                          <div className="pages" />
-                        </div>
-
-                        {/* BACK (뒷면) - 거의 안 보이지만 박스 안정용 */}
-                        <div className="face back">
-                          <div className="backPlate" />
-                        </div>
-                      </div>
-                    </div>
+              <div className="previewCard">
+                {!canShow3D ? (
+                  <div className="empty">
+                    <div className="emptyBig">앞표지 + 책등을 둘 다 올리면</div>
+                    <div className="emptySmall">여기에 입체표지가 나타나요</div>
                   </div>
+                ) : (
+                  <Book3D
+                    coverUrl={cover.url!}
+                    spineUrl={spine.url!}
+                    hook={hook}
+                    frontW={previewFrontSize.fw}
+                    frontH={previewFrontSize.fh}
+                    depth={clamp(depthPx, 16, 64)}
+                    camY={camY}
+                    camX={camX}
+                    tiltZ={tiltZ}
+                  />
+                )}
+              </div>
 
-                  <div className="mt-4 text-xs text-neutral-700">
-                    이 미리보기는 “샘플 각도에 맞춘 3D 박스”입니다. 다음 단계에서 서버가 최종 PNG(800×1500 등)를 생성합니다.
-                  </div>
-                  <div className="mt-1 text-xs text-neutral-600">
-                    현재 책 크기(화면용): W {bookDims.W}px / H {bookDims.H}px / 두께 D {bookDims.D}px
-                  </div>
-                </div>
+              <div className="hint" style={{ marginTop: 10 }}>
+                ※ “안 보이는 것처럼” 보이면 대부분 <b>미리보기 박스가 잘라먹는(overflow)</b> 문제인데,
+                이 코드는 <b>잘리지 않게</b> 만들어놨어요.
               </div>
             </div>
           </div>
         </section>
-
-        {/* 2) Features */}
-        <section className="mt-8 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-neutral-200">
-          <h2 className="text-lg font-semibold">2) 특징 5개(텍스트 + 이미지 매칭)</h2>
-          <p className="mt-2 text-sm text-neutral-600">
-            특징은 “카드 1개 = 제목/설명/이미지 1개”로 묶여서 절대 꼬이지 않아요.
-          </p>
-
-          <div className="mt-6 grid gap-6">
-            {features.map((f, idx) => (
-              <div key={idx} className="rounded-2xl border border-neutral-200 p-4 md:p-5">
-                <div className="flex items-center justify-between">
-                  <div className="text-sm font-semibold">특징 {idx + 1}</div>
-                  <div className="text-xs text-neutral-500">(title/desc/image 한 세트)</div>
-                </div>
-
-                <div className="mt-4 grid gap-4 md:grid-cols-2">
-                  <div className="space-y-3">
-                    <div>
-                      <label className="text-xs font-medium text-neutral-700">제목</label>
-                      <input
-                        className="mt-1 w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-600"
-                        value={f.title}
-                        onChange={(e) => updateFeature(idx, { title: e.target.value })}
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-xs font-medium text-neutral-700">설명</label>
-                      <textarea
-                        className="mt-1 w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-600"
-                        rows={3}
-                        value={f.desc}
-                        onChange={(e) => updateFeature(idx, { desc: e.target.value })}
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-xs font-medium text-neutral-700">관련 이미지 업로드</label>
-                      <label className="mt-2 inline-flex w-full cursor-pointer items-center justify-center rounded-2xl border border-neutral-300 bg-white px-4 py-3 text-sm font-semibold text-neutral-900 hover:bg-neutral-50">
-                        특징 {idx + 1} 이미지 선택하기
-                        <input
-                          className="hidden"
-                          type="file"
-                          accept="image/*"
-                          onChange={(e) =>
-                            updateFeature(idx, { imageFile: e.target.files?.[0] ?? null })
-                          }
-                        />
-                      </label>
-
-                      <div className="mt-2 text-xs text-neutral-600">
-                        선택된 파일: <b>{f.imageFile?.name ?? "없음"}</b>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="text-xs font-medium text-neutral-700">이미지 미리보기</label>
-                    <div className="mt-1 overflow-hidden rounded-2xl border border-neutral-200 bg-neutral-100">
-                      <div className="relative aspect-[16/9] w-full">
-                        {f.imagePreviewUrl ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={f.imagePreviewUrl}
-                            alt={`feature ${idx + 1} preview`}
-                            className="h-full w-full object-cover"
-                          />
-                        ) : (
-                          <div className="flex h-full w-full items-center justify-center text-sm text-neutral-500">
-                            특징 {idx + 1} 이미지를 업로드하면 여기 보입니다
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                    <div className="mt-3 text-xs text-neutral-500">파일명: {f.imageFile?.name ?? "없음"}</div>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        {/* Generate */}
-        <section className="mt-8 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div className="text-sm text-neutral-600">
-            다음 단계에서 이 입력값을 서버로 보내서 “상세페이지 PNG”를 생성합니다.
-          </div>
-          <button
-            className={`rounded-2xl px-5 py-3 text-sm font-semibold shadow-sm ring-1 transition ${isReady
-                ? "bg-black text-white ring-black hover:bg-neutral-800"
-                : "bg-neutral-200 text-neutral-500 ring-neutral-200 cursor-not-allowed"
-              }`}
-            disabled={!isReady}
-            onClick={handleGenerate}
-          >
-            생성하기(테스트)
-          </button>
-        </section>
-
-        {/* 3D CSS */}
-        <style jsx>{`
-          .scene {
-            position: relative;
-            perspective: var(--persp);
-            width: calc(var(--bookW) + var(--bookD) + 80px);
-            height: calc(var(--bookH) + 80px);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-          }
-
-          .shadow-ellipse {
-            position: absolute;
-            width: 280px;
-            height: 34px;
-            background: rgba(0, 0, 0, 0.18);
-            filter: blur(18px);
-            border-radius: 999px;
-            transform: translateY(calc(var(--bookH) / 2 + 18px));
-          }
-
-          .book {
-            position: relative;
-            width: var(--bookW);
-            height: var(--bookH);
-            transform-style: preserve-3d;
-            transform: rotateY(var(--rotY)) rotateX(var(--rotX)) rotateZ(var(--rotZ));
-            filter: drop-shadow(0 18px 22px rgba(0, 0, 0, 0.22));
-          }
-
-          .face {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform-style: preserve-3d;
-            backface-visibility: hidden;
-          }
-
-          /* 앞면: z = +D/2 */
-          .front {
-            width: var(--bookW);
-            height: var(--bookH);
-            transform: translate(-50%, -50%) translateZ(calc(var(--bookD) / 2));
-          }
-
-          /* 뒷면: z = -D/2 */
-          .back {
-            width: var(--bookW);
-            height: var(--bookH);
-            transform: translate(-50%, -50%) rotateY(180deg) translateZ(calc(var(--bookD) / 2));
-          }
-
-          /* 왼쪽면(책등): x = -W/2 */
-          .left {
-            width: var(--bookD);
-            height: var(--bookH);
-            transform: translate(-50%, -50%) rotateY(-90deg) translateZ(calc(var(--bookW) / 2));
-          }
-
-          /* 오른쪽면(페이지): x = +W/2 */
-          .right {
-            width: var(--bookD);
-            height: var(--bookH);
-            transform: translate(-50%, -50%) rotateY(90deg) translateZ(calc(var(--bookW) / 2));
-          }
-
-          .faceInner {
-            width: 100%;
-            height: 100%;
-            overflow: hidden;
-            border-radius: 18px;
-            background: white;
-            border: 1px solid rgba(0, 0, 0, 0.08);
-          }
-
-          /* 앞표지 모서리는 샘플처럼 살짝 둥글게 */
-          .front .faceInner {
-            border-radius: 22px;
-          }
-
-          /* 책등은 모서리 조금 덜 둥글게 */
-          .left .faceInner {
-            border-radius: 16px;
-          }
-
-          /* 페이지면(오른쪽)은 흰색 종이 느낌 + 아주 약한 줄 */
-          .pages {
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(to right, #f6f6f6, #ffffff 35%, #f0f0f0);
-            border-radius: 14px;
-            border: 1px solid rgba(0, 0, 0, 0.05);
-            position: relative;
-            overflow: hidden;
-          }
-
-          .pages::after {
-            content: "";
-            position: absolute;
-            inset: 0;
-            background: repeating-linear-gradient(
-              to bottom,
-              rgba(0, 0, 0, 0.03),
-              rgba(0, 0, 0, 0.03) 1px,
-              transparent 1px,
-              transparent 7px
-            );
-            opacity: 0.18;
-          }
-
-          .backPlate {
-            width: 100%;
-            height: 100%;
-            background: #ffffff;
-            border-radius: 22px;
-            border: 1px solid rgba(0, 0, 0, 0.06);
-          }
-        `}</style>
       </div>
+
+      <style jsx>{`
+        .page {
+          background: #fafafa;
+          min-height: 100vh;
+          padding: 24px;
+        }
+        .wrap {
+          max-width: 1100px;
+          margin: 0 auto;
+        }
+        .title {
+          font-size: 22px;
+          font-weight: 800;
+          margin-bottom: 14px;
+        }
+        .card {
+          background: #fff;
+          border: 1px solid rgba(0,0,0,0.08);
+          border-radius: 18px;
+          padding: 18px;
+          margin-bottom: 16px;
+          box-shadow: 0 10px 30px rgba(0,0,0,0.06);
+        }
+        .cardTitle {
+          font-weight: 800;
+          margin-bottom: 6px;
+        }
+        .muted {
+          color: rgba(0,0,0,0.65);
+          margin-bottom: 14px;
+          line-height: 1.4;
+        }
+        .row2 {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 12px;
+          align-items: end;
+        }
+        .label {
+          display: block;
+          font-weight: 700;
+          margin-bottom: 6px;
+        }
+        .input {
+          width: 100%;
+          border: 1px solid rgba(0,0,0,0.14);
+          border-radius: 12px;
+          padding: 10px 12px;
+          font-size: 14px;
+          outline: none;
+        }
+        .input:focus {
+          border-color: rgba(0,0,0,0.3);
+        }
+        .hint {
+          font-size: 12px;
+          color: rgba(0,0,0,0.55);
+          margin-top: 6px;
+        }
+        .pill {
+          margin-top: 12px;
+          padding: 12px;
+          border-radius: 14px;
+          background: rgba(0,0,0,0.04);
+          border: 1px solid rgba(0,0,0,0.06);
+        }
+        .pillTitle { font-weight: 800; }
+        .pillValue { margin-top: 4px; font-weight: 800; font-size: 16px; }
+        .pillSub { margin-top: 4px; font-size: 12px; color: rgba(0,0,0,0.55); }
+
+        .grid2 {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 14px;
+          align-items: start;
+        }
+
+        .spacer { height: 14px; }
+
+        .fileRow { display: flex; gap: 10px; align-items: center; }
+        .fileInput { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
+
+        .fileBtn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 100%;
+          padding: 12px 14px;
+          border-radius: 14px;
+          border: 1px solid rgba(0,0,0,0.16);
+          background: #fff;
+          font-weight: 800;
+          cursor: pointer;
+          user-select: none;
+        }
+        .fileBtn.dark {
+          background: #111;
+          color: #fff;
+          border-color: #111;
+        }
+
+        .fileMeta {
+          margin-top: 8px;
+          font-size: 12px;
+          color: rgba(0,0,0,0.6);
+        }
+
+        .sliderRow {
+          display: flex;
+          gap: 10px;
+          align-items: center;
+        }
+        .slider { width: 100%; }
+        .chip {
+          min-width: 64px;
+          text-align: center;
+          padding: 6px 10px;
+          border-radius: 999px;
+          background: rgba(0,0,0,0.06);
+          border: 1px solid rgba(0,0,0,0.08);
+          font-weight: 800;
+          font-size: 12px;
+        }
+
+        .details {
+          border: 1px solid rgba(0,0,0,0.08);
+          border-radius: 14px;
+          padding: 10px 12px;
+          background: rgba(0,0,0,0.02);
+        }
+        summary {
+          cursor: pointer;
+          font-weight: 800;
+        }
+        .subControls {
+          margin-top: 10px;
+          display: grid;
+          gap: 10px;
+        }
+        .ctrl {
+          display: grid;
+          grid-template-columns: 120px 1fr 70px;
+          gap: 10px;
+          align-items: center;
+        }
+        .ctrlLabel { font-size: 12px; font-weight: 800; color: rgba(0,0,0,0.7); }
+
+        .previewTitle {
+          font-weight: 800;
+          margin-bottom: 8px;
+        }
+
+        /* 여기 중요: previewCard가 잘라먹으면 3D가 안 보이는 것처럼 됨.
+           그래서 overflow: visible 로 두고 padding을 넉넉히 줌 */
+        .previewCard {
+          border-radius: 18px;
+          border: 1px solid rgba(0,0,0,0.08);
+          background: #f7f2cf;
+          padding: 24px;
+          min-height: 620px;
+          overflow: visible;
+          position: relative;
+        }
+
+        .empty {
+          position: absolute;
+          inset: 0;
+          display: grid;
+          place-items: center;
+          text-align: center;
+          color: rgba(0,0,0,0.55);
+        }
+        .emptyBig { font-weight: 900; font-size: 16px; }
+        .emptySmall { margin-top: 6px; font-size: 13px; }
+      `}</style>
     </main>
+  );
+}
+
+function Book3D(props: {
+  coverUrl: string;
+  spineUrl: string;
+  hook: string;
+  frontW: number;
+  frontH: number;
+  depth: number;
+  camY: number;
+  camX: number;
+  tiltZ: number;
+}) {
+  const { coverUrl, spineUrl, hook, frontW, frontH, depth, camY, camX, tiltZ } = props;
+
+  // 페이지(오른쪽 면) 패턴
+  const pagesBg = useMemo(() => {
+    return `repeating-linear-gradient(
+      to bottom,
+      rgba(0,0,0,0.10),
+      rgba(0,0,0,0.10) 1px,
+      rgba(255,255,255,0.0) 1px,
+      rgba(255,255,255,0.0) 7px
+    )`;
+  }, []);
+
+  return (
+    <div className="stage">
+      <div
+        className="bookWrap"
+        style={
+          {
+            ['--fw' as any]: `${frontW}px`,
+            ['--fh' as any]: `${frontH}px`,
+            ['--d' as any]: `${depth}px`,
+            ['--ry' as any]: `${-camY}deg`,
+            ['--rx' as any]: `${camX}deg`,
+            ['--rz' as any]: `${tiltZ}deg`,
+          } as React.CSSProperties
+        }
+      >
+        <div className="shadow" />
+        <div className="book">
+          {/* FRONT */}
+          <div className="face front" style={{ backgroundImage: `url("${coverUrl}")` }}>
+            {hook?.trim() ? <div className="hook">{hook}</div> : <div className="hook ghost">Hook 메시지가 여기에 올라갑니다</div>}
+          </div>
+
+          {/* BACK (간단히 같은 이미지+어둡게) */}
+          <div className="face back" style={{ backgroundImage: `url("${coverUrl}")` }} />
+
+          {/* LEFT = SPINE */}
+          <div className="face left" style={{ backgroundImage: `url("${spineUrl}")` }} />
+
+          {/* RIGHT = PAGES */}
+          <div className="face right" style={{ backgroundImage: pagesBg }} />
+
+          {/* TOP/BOTTOM (있으면 더 자연스럽지만 최소 구현) */}
+          <div className="face top" />
+          <div className="face bottom" />
+        </div>
+      </div>
+
+      <style jsx>{`
+        .stage {
+          width: 100%;
+          height: 560px;
+          display: grid;
+          place-items: center;
+          overflow: visible;
+        }
+
+        .bookWrap {
+          position: relative;
+          width: calc(var(--fw) + 200px);
+          height: calc(var(--fh) + 200px);
+          display: grid;
+          place-items: center;
+          perspective: 1200px;
+          overflow: visible;
+        }
+
+        .shadow {
+          position: absolute;
+          width: calc(var(--fw) * 0.95);
+          height: calc(var(--fh) * 0.25);
+          border-radius: 999px;
+          background: rgba(0,0,0,0.22);
+          filter: blur(22px);
+          transform: translateY(calc(var(--fh) * 0.35));
+          opacity: 0.55;
+        }
+
+        .book {
+          position: relative;
+          width: var(--fw);
+          height: var(--fh);
+          transform-style: preserve-3d;
+          transform:
+            rotateY(var(--ry))
+            rotateX(var(--rx))
+            rotateZ(var(--rz))
+            translateZ(0px);
+          filter: drop-shadow(0 22px 35px rgba(0,0,0,0.25));
+        }
+
+        .face {
+          position: absolute;
+          inset: 0;
+          background-size: cover;
+          background-position: center;
+          background-repeat: no-repeat;
+          border-radius: 18px;
+          backface-visibility: hidden;
+        }
+
+        /* FRONT/BACK */
+        .front {
+          transform: translateZ(calc(var(--d) / 2));
+          overflow: hidden;
+        }
+        .back {
+          transform: rotateY(180deg) translateZ(calc(var(--d) / 2));
+          filter: brightness(0.82);
+        }
+
+        /* SPINE (LEFT) */
+        .left {
+          width: var(--d);
+          height: var(--fh);
+          border-radius: 14px;
+          transform: rotateY(-90deg) translateZ(calc(var(--fw) / 2));
+          transform-origin: left center;
+          filter: brightness(0.96);
+        }
+
+        /* PAGES (RIGHT) */
+        .right {
+          width: var(--d);
+          height: var(--fh);
+          border-radius: 14px;
+          transform: rotateY(90deg) translateZ(calc(var(--fw) / 2));
+          transform-origin: right center;
+          background-color: #f7f7f7;
+          background-size: cover;
+          filter: brightness(1.03);
+        }
+
+        /* TOP/BOTTOM */
+        .top {
+          height: var(--d);
+          width: var(--fw);
+          border-radius: 14px;
+          transform: rotateX(90deg) translateZ(calc(var(--fh) / 2));
+          transform-origin: top center;
+          background: linear-gradient(180deg, rgba(255,255,255,0.9), rgba(0,0,0,0.05));
+        }
+        .bottom {
+          height: var(--d);
+          width: var(--fw);
+          border-radius: 14px;
+          transform: rotateX(-90deg) translateZ(calc(var(--fh) / 2));
+          transform-origin: bottom center;
+          background: linear-gradient(180deg, rgba(0,0,0,0.08), rgba(255,255,255,0.75));
+        }
+
+        /* Hook 배너 */
+        .hook {
+          position: absolute;
+          left: 18px;
+          right: 18px;
+          top: 18px;
+          padding: 10px 14px;
+          border-radius: 14px;
+          background: rgba(0,0,0,0.55);
+          color: #fff;
+          font-weight: 900;
+          font-size: 14px;
+          line-height: 1.25;
+          backdrop-filter: blur(6px);
+        }
+        .hook.ghost {
+          background: rgba(0,0,0,0.32);
+        }
+      `}</style>
+    </div>
   );
 }
