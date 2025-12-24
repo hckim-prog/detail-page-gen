@@ -104,7 +104,7 @@ export default function Page() {
   return (
     <main className="page">
       <div className="wrap">
-        <h1 className="title">detail page gen</h1>
+        <h1 className="title">상세페이지 제작</h1>
 
         {/* 0) 상세페이지 사이즈 */}
         <section className="card">
